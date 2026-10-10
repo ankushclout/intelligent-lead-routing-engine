@@ -1,0 +1,14 @@
+{
+  "sender_name": "Test Sender",
+  "sender_company": "Test Co",
+  "value_prop": "We help small teams automate repetitive manual work.",
+  "calendar_link": "",
+  "leads": [
+    {
+      "name": "TEST Fictional Lead",
+      "email": "test.lead@example.com",
+      "title": "Operations Manager",
+      "company": "Example Corp (fictional test)"
+    }
+  ]
+}

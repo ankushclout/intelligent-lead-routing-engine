@@ -1,0 +1,309 @@
+{
+  "name": "LeadPilot Lite — Manual Lead Email Writer",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leadpilot-lite",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "8972b91e-c5ee-4297-9e8a-9337a9b714e5",
+      "name": "Receive Lead Data",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        80,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst body = input.body || input;\nconst errors = [];\n\nconst senderName = String(body.sender_name || '').trim();\nconst senderValue = String(body.value_prop || '').trim();\nconst senderCompany = String(body.sender_company || '').trim();\nconst calendarLink = String(body.calendar_link || '').trim();\nif (!senderName) errors.push('sender_name is required');\nif (!senderValue) errors.push('value_prop is required');\n\nconst leads = Array.isArray(body.leads) ? body.leads : [];\nif (!leads.length) errors.push('leads must be a non-empty array');\nif (leads.length > 20) errors.push('maximum 20 leads per request');\nleads.forEach((lead, i) => {\n  if (!lead || typeof lead !== 'object') { errors.push('leads[' + i + '] must be an object'); return; }\n  if (!String(lead.name || '').trim()) errors.push('leads[' + i + '].name is required');\n  if (!String(lead.company || '').trim()) errors.push('leads[' + i + '].company is required');\n});\nif (errors.length) {\n  throw new Error('Invalid request: ' + errors.join('; ') + '. Expected: { \"sender_name\": \"...\", \"value_prop\": \"...\", \"leads\": [{ \"name\": \"...\", \"email\": \"...\", \"title\": \"...\", \"company\": \"...\" }] }');\n}\n\nreturn leads.map(lead => ({\n  json: {\n    name: String(lead.name).trim(),\n    email: String(lead.email || '').trim(),\n    title: String(lead.title || '').trim(),\n    company: String(lead.company).trim(),\n    industry: String(lead.industry || '').trim(),\n    companyDescription: String(lead.company_description || '').trim(),\n    notes: String(lead.notes || '').trim(),\n    senderName,\n    senderCompany,\n    senderValue,\n    calendarLink\n  }\n}));"
+      },
+      "id": "16038f42-e2e6-4e40-a14e-664d30261915",
+      "name": "Parse Lead List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        304,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5.4-nano",
+          "cachedResultName": "GPT-5.4-NANO"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "=Lead:\n- Name: {{ $json.name }}\n- Title: {{ $json.title || 'not provided' }}\n- Company: {{ $json.company }}\n- Industry: {{ $json.industry || 'not provided' }}\n- Company description: {{ $json.companyDescription || 'not provided' }}\n- Notes: {{ $json.notes || 'not provided' }}\n\nSender:\n- Name: {{ $json.senderName }}\n- Company: {{ $json.senderCompany || 'not provided' }}\n- Value proposition: {{ $json.senderValue }}\n- Calendar link: {{ $json.calendarLink || 'not provided' }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "instructions": "You write short, personalized cold sales emails. Use ONLY the lead and sender details provided. Never invent facts, statistics, mutual connections, results, or claims; skip any detail marked not provided. Email body: under 110 words, plain text, one clear low-pressure call to action, sign off with the sender name. Include the calendar link only if provided. Follow-up: under 60 words, plain text, a polite nudge. Return ONLY a JSON object with exactly these string keys: subject, email_body, follow_up.",
+          "maxTokens": 1500,
+          "reasoning": {
+            "reasoningOptions": {
+              "effort": "low",
+              "summary": "none"
+            }
+          },
+          "textFormat": {
+            "textOptions": {
+              "type": "json_object"
+            }
+          }
+        }
+      },
+      "id": "617b9f25-b2f0-42fb-81df-490d31ce3b2d",
+      "name": "AI: Write Cold Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        544,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const leads = $('Parse Lead List').all();\nconst outputs = $input.all();\nif (outputs.length !== leads.length) {\n  throw new Error('Expected ' + leads.length + ' AI results but received ' + outputs.length);\n}\n\nreturn outputs.map((item, i) => {\n  const j = item.json || {};\n  const messages = Array.isArray(j.output) ? j.output : [];\n  const msg = messages.find(m => m && m.type === 'message') || messages[0];\n  const part = msg && Array.isArray(msg.content) ? (msg.content.find(c => c && c.text !== undefined) || msg.content[0]) : null;\n  let data = part ? part.text : (j.message && j.message.content !== undefined ? j.message.content : j.text);\n\n  if (typeof data === 'string') {\n    const start = data.indexOf('{');\n    const end = data.lastIndexOf('}');\n    if (start === -1 || end <= start) throw new Error('AI output for lead ' + (i + 1) + ' contained no JSON object');\n    try {\n      data = JSON.parse(data.slice(start, end + 1));\n    } catch (e) {\n      throw new Error('Failed to parse AI output for lead ' + (i + 1) + ': ' + e.message);\n    }\n  }\n  if (!data || typeof data !== 'object') throw new Error('Unexpected AI output shape for lead ' + (i + 1));\n\n  const subject = String(data.subject || '').trim();\n  const emailBody = String(data.email_body || '').trim();\n  if (!subject || !emailBody) throw new Error('AI output for lead ' + (i + 1) + ' is missing subject or email_body');\n\n  return {\n    json: {\n      ...leads[i].json,\n      email_subject: subject,\n      email_body: emailBody,\n      follow_up: String(data.follow_up || '').trim(),\n      generatedAt: new Date().toISOString()\n    }\n  };\n});"
+      },
+      "id": "7f563058-8b2a-4eac-a6c2-62aca20f81c1",
+      "name": "Merge Lead + Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Lite Pipeline"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Email": "={{ $json.email }}",
+            "Title": "={{ $json.title }}",
+            "Company": "={{ $json.company }}",
+            "Subject Line": "={{ $json.email_subject }}",
+            "Email Body": "={{ $json.email_body }}",
+            "Follow-up": "={{ $json.follow_up }}",
+            "Generated At": "={{ $json.generatedAt }}",
+            "Sent": "FALSE"
+          },
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Title",
+              "displayName": "Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Subject Line",
+              "displayName": "Subject Line",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Email Body",
+              "displayName": "Email Body",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Follow-up",
+              "displayName": "Follow-up",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Generated At",
+              "displayName": "Generated At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Sent",
+              "displayName": "Sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "82d48151-8859-4e1f-a416-419944f23edb",
+      "name": "Save to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1008,
+        224
+      ],
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, saved: $(\"Merge Lead + Email\").all().length, leads: $(\"Merge Lead + Email\").all().map(i => ({ lead: i.json.name, company: i.json.company, subjectLine: i.json.email_subject })), sheetUrl: \"https://docs.google.com/spreadsheets/d/YOUR_GOOGLE_SHEET_ID/edit\", message: \"Emails generated and saved to Lite Pipeline. Nothing was sent.\" }) }}",
+        "options": {}
+      },
+      "id": "dddaa506-e853-4cb5-b860-e8708d66fb7a",
+      "name": "Respond: Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1008,
+        432
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "content": "## LeadPilot Lite — Manual Lead Email Writer\n\nPOST: sender_name, value_prop, leads[] (name, company required; email, title optional).\nGenerates a cold email + follow-up per lead and saves them to the \"Lite Pipeline\" tab.\nNothing is sent — review in Google Sheets.",
+        "height": 280,
+        "width": 380,
+        "color": 6
+      },
+      "id": "6bf21bda-e0e5-4fa6-bf2e-a4a91c54ed02",
+      "name": "Sticky Note: Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Receive Lead Data": {
+      "main": [
+        [
+          {
+            "node": "Parse Lead List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Lead List": {
+      "main": [
+        [
+          {
+            "node": "AI: Write Cold Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Write Cold Email": {
+      "main": [
+        [
+          {
+            "node": "Merge Lead + Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Lead + Email": {
+      "main": [
+        [
+          {
+            "node": "Save to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Respond: Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": []
+}
